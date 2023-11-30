@@ -219,6 +219,7 @@ public:
     pfnt_on_packet packet_handler;
     int capture_finish;
     int data_state;
+    uint32_t last_header;
     uint32_t data_buf[1024+16]; // USB max packet size <= 4096bytes
     int32_t data_buf_idx;
     int32_t pkt_len;

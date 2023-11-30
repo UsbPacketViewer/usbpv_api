@@ -351,6 +351,7 @@ int upv_s::process_data(const uint8_t* data, int len)
     int ret = 0;
     for(;count>0;count--,buf++){
         uint32_t header = *buf;
+        last_header = header;
         switch(data_state){
         case 0:
             if(header == UPV_START_CMD){
@@ -376,6 +377,11 @@ int upv_s::process_data(const uint8_t* data, int len)
             break;
         case 2:
             pkt_len = header & 0xffff;
+            if(pkt_len > (1024+3)){
+                // wrong packet data
+                data_state = 10; // goto recover mode
+                break;
+            }
             data_buf[data_buf_idx++] = header;
             if(pkt_len <= 2){
                 if(packet_handler){
@@ -400,6 +406,21 @@ int upv_s::process_data(const uint8_t* data, int len)
                 ret = -1;
                 break;
             }
+            break;
+        case 10:
+             pkt_len = header & 0xffff;
+             if((last_header & 0xf0) == 0x60 && pkt_len<=(1024+3)){
+                 data_buf[data_buf_idx++] = header;
+                 if(pkt_len <= 2){
+                     if(packet_handler){
+                         packet_handler(capture_context, pkt_tick, ((char*)data_buf)+2, pkt_len, pkt_status);
+                     }
+                     data_state = 1;
+                 }else{
+                     data_state = 3;
+                 }
+                 break;
+             }
             break;
         default:
             data_state = 1;
