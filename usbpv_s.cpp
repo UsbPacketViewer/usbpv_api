@@ -351,7 +351,6 @@ int upv_s::process_data(const uint8_t* data, int len)
     int ret = 0;
     for(;count>0;count--,buf++){
         uint32_t header = *buf;
-        last_header = header;
         switch(data_state){
         case 0:
             if(header == UPV_START_CMD){
@@ -426,6 +425,7 @@ int upv_s::process_data(const uint8_t* data, int len)
             data_state = 1;
             break;
         }
+        last_header = header;
         if(ret<0)break;
     }
     usbpv_record_data(data, len);
