@@ -133,19 +133,33 @@ template<typename T>
 struct upv_queue{
     upv_queue(){
         sem_init(&sem, 0, 0);
+        pthread_mutex_init(&mutex, NULL);
     }
     ~upv_queue(){
+        pthread_mutex_destroy(&mutex);
         sem_destroy(&sem);
     }
+
+    inline void lock() {
+        pthread_mutex_lock(&mutex);
+    }
+    inline void unlock() {
+        pthread_mutex_unlock(&mutex);
+    }
+
     void en_q(const T& v){
+        lock();
         data.push_back(v);
+        unlock();
         sem_post(&sem);
     }
     bool de_q(T& v){
         int r = sem_wait(&sem);
         if(r == 0){
+            lock();
             v = data.front();
             data.pop_front();
+            unlock();
             return true;
         }
         return false;
@@ -163,8 +177,10 @@ struct upv_queue{
                   return false;
               }
           }else if(r == 0){
+              lock();
               v = data.front();
               data.pop_front();
+              unlock();
               return true;
           }else{
               return false;
@@ -174,6 +190,7 @@ struct upv_queue{
     }
     list<T> data;
     sem_t  sem;
+    pthread_mutex_t mutex;
 };
 
 typedef long(UPV_CB* pfnt_on_packet)(void* context, unsigned long tick_60MHz, const void* data, unsigned long len, long status);
