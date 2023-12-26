@@ -38,6 +38,8 @@ int main(int argc, char* argv[])
     if(res != 0){
         printf("fail to open %s, %d\n", devs.begin()->c_str(), res);
         return res;
+    }else{
+        printf("Open %s speed device success\n", upv.bcdUSB>=0x300?"super":"high");
     }
 
     fp_data = fopen("test.bin", "wb+");
