@@ -170,10 +170,14 @@ int upv_reset_device(libusb_device_handle *usb_dev, const char** error_string)
     return 0;
 }
 
+int upv_dummy_read_data(libusb_device_handle *usb_dev, const char** error_string);
 int upv_start_device(libusb_device_handle *usb_dev, const char** error_string)
 {
     if (usb_dev == NULL)
         upv_error_return(-2, "USB device unavailable");
+
+    upv_dummy_read_data(usb_dev, error_string);
+
 
     if (libusb_control_transfer(usb_dev, UPV_OUT_REQ, UPV_START, 0, 0, NULL, 0, USB_WRITE_TIMEOUT) < 0)
         upv_error_return(-1, "unable to start device. may not a upv?");
@@ -218,16 +222,39 @@ int upv_read_data(libusb_device_handle *usb_dev, unsigned char* buf, int size, c
     return actual_length;
 }
 
+int upv_dummy_read_data(libusb_device_handle *usb_dev, const char** error_string)
+{
+    int actual_length;
+    unsigned char buf[4096];
+    do{
+        if (libusb_bulk_transfer(usb_dev, IN_EP, buf, sizeof(buf), &actual_length, 20) < 0)
+            upv_error_return(-1, "usb bulk read failed");
+        UPV_LOG("Dummy read %d data\n", actual_length);
+    }while(actual_length>=(int)sizeof(buf));
+    return actual_length;
+}
+
 int upv_write_config_data(libusb_device_handle *usb_dev, uint8_t id, uint8_t val)
 {
     uint8_t buf_in[4] = {0x55, id, val};
     uint8_t buf_out[4] = {0};
     buf_in[3] = (uint8_t)0x55+id+val;
     int r = upv_write_data(usb_dev, buf_in, 4, NULL);
-    if(r < 0)return r;
+    if(r < 0){
+        UPV_LOG("Fail to write config data\n");
+        return r;
+    }
     r = upv_read_data(usb_dev, buf_out, 4, NULL);
-    if(r <= 0)return -1;
+    if(r <= 0){
+        UPV_LOG("Fail to readback config data %d\n", r);
+        return -1;
+    }
     r = memcmp(buf_in, buf_out, sizeof(buf_in));
-    if(r != 0) return -2;
+    if(r != 0){
+        UPV_LOG("Fail to config, data mismatch\n");
+        UPV_LOG("Write %02x %02x %02x %02x\n", buf_in[0], buf_in[1], buf_in[2], buf_in[3]);
+        UPV_LOG("Read  %02x %02x %02x %02x\n", buf_out[0], buf_out[1], buf_out[2], buf_out[3]);
+        return -2;
+    }
     return 0;
 }
