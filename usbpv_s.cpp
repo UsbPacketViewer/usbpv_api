@@ -2,6 +2,11 @@
 #include "string.h"
 #include "pthread.h"
 #include "signal.h"
+#include "time.h"
+
+#ifdef __MINGW32__
+#define gettimeofday mingw_gettimeofday
+#endif
 
 const uint8_t init_data[] = {
 #include "init_data.txt"
@@ -129,14 +134,20 @@ upv_s::upv_result upv_s::open(const char* option, int opt_len)
         speed = option[param_index++];
     }
     r = upv_write_config_data(usb_dev, 8, 0x0c | (speed & 0x03));
-    if( r < 0) return upv_s::R_WriteConfig;
+    if( r < 0){
+        UPV_LOG("Fail to write speed data\n");
+        return upv_s::R_WriteConfig;
+    }
 
     uint8_t flag = UPV_FLAG_ALL;
     if(opt_len > param_index){
         flag = option[param_index++];
     }
     r = upv_write_config_data(usb_dev, 31, flag^0xff);
-    if( r < 0) return upv_s::R_WriteConfig;
+    if( r < 0) {
+        UPV_LOG("Fail to write flag data\n");
+        return upv_s::R_WriteConfig;
+    }
 
     {
         struct AddrEpFilter_t{
@@ -203,6 +214,7 @@ upv_s::upv_result upv_s::open(const char* option, int opt_len)
             uint8_t v = filter[i];
             r = upv_write_config_data(usb_dev, addr, v);
             if(r!=R_Success){
+                UPV_LOG("Fail to write filter data %d\n", i);
                 return upv_s::R_WriteConfig;
             }
             addr++;
@@ -220,7 +232,12 @@ static void* parser_thread_callback(void* upv)
 {
     return ((upv_s*)upv)->parser_thread_func();
 }
-
+#ifdef UPV_PKT_DEBUG
+static void* dbg_thread_callback(void* upv)
+{
+    return ((upv_s*)upv)->dbg_thread_func();
+}
+#endif
 upv_s::upv_result upv_s::start_capture(void* context, pfnt_on_packet callback)
 {
     capture_context = context;
@@ -244,6 +261,21 @@ upv_s::upv_result upv_s::start_capture(void* context, pfnt_on_packet callback)
         return upv_s::R_Thread;
     }
 
+#ifdef UPV_PKT_DEBUG
+    gettimeofday(&dbg_start_time, NULL);
+    dbg_finish = 0;
+    dbg_recv_len = 0;
+    dbg_process_len = 0;
+    dbg_pkt_count = 0;
+    dbg_recover_count = 0;
+    dbg_last_remain = 0;
+    dbg_last_rx_len = 0;
+    int dbg_r = pthread_create(&dbg_thread, NULL, dbg_thread_callback, this);
+    if(dbg_r!=0){
+        printf("Fail to start debug thread\n");
+    }
+#endif
+
     data_state = 0;
     uint32_t data = UPV_START_CMD;
     r = upv_write_data(usb_dev, (uint8_t*)&data, 4, NULL);
@@ -258,6 +290,10 @@ static void LIBUSB_CALL usb_data_callback(struct libusb_transfer* transfer) {
     case LIBUSB_TRANSFER_COMPLETED: {
         if (transfer->actual_length > 0) {
             upv->buf_data_q->en_q({transfer->buffer, transfer->actual_length});
+#ifdef UPV_PKT_DEBUG
+            upv->dbg_recv_len += transfer->actual_length;
+            upv->dbg_last_rx_len = transfer->actual_length;
+#endif
             transfer->buffer = upv->mem_pool.get();
         }
         ret = libusb_submit_transfer(transfer);
@@ -323,6 +359,9 @@ void* upv_s::parser_thread_func()
             int len = (int)msg.len;
             uint8_t* data = (uint8_t*)msg.buffer;
             int ret = process_data(data, len);
+#ifdef UPV_PKT_DEBUG
+            dbg_process_len += len;
+#endif
             mem_pool.put(data);
             if (ret < 0) {
                 capture_finish = 1;
@@ -336,6 +375,56 @@ void* upv_s::parser_thread_func()
     data_parser_q->en_q(0);
     return NULL;
 }
+
+#ifdef UPV_PKT_DEBUG
+void* upv_s::dbg_thread_func()
+{
+    int show_desc = 1;
+    while(!dbg_finish){
+        msleep(1000);
+        if(show_desc){
+            show_desc = 0;
+            printf("\n"
+                   "Debug info description\n"
+                   "Rx : Received packet total length\n"
+                   "Px : Process data totol length\n"
+                   "Pkt: Packet totol count\n"
+                   "Rcv: Recover totol count\n"
+                   "Rm : Hardware buffer reamin size, totol 255\n"
+                   "LRx: Last transfer packet length\n"
+                   );
+        }
+        struct timeval now;
+        long seconds, microseconds;
+        gettimeofday(&now, NULL);
+        long elapsed = now.tv_sec - dbg_start_time.tv_sec;
+        printf("T: ");
+        if(elapsed>=24*3600){
+            printf("%dd", elapsed/(24*3600));
+            elapsed %= 24*3600;
+            printf("%dh", elapsed/3600);
+            elapsed %= 3600;
+            printf("%dm", elapsed/60);
+            elapsed %= 60;
+            printf("%ds", elapsed);
+        }else if(elapsed>=3600){
+            printf("%dh", elapsed/3600);
+            elapsed %= 3600;
+            printf("%dm", elapsed/60);
+            elapsed %= 60;
+            printf("%ds", elapsed);
+        }else if(elapsed>=60){
+            printf("%dm", elapsed/60);
+            elapsed %= 60;
+            printf("%ds", elapsed);
+        }else{
+            printf("%ds", elapsed);
+        }
+        printf(" Rx:%llu Px:%llu Pkt:%llu Rcv:%llu, Rm:%d LRx:%d     \r", dbg_recv_len, dbg_process_len, dbg_pkt_count, dbg_recover_count, dbg_last_remain, dbg_last_rx_len);
+        fflush(stdout);
+    }
+}
+#endif
 
 const uint8_t speed_cvt[16] = {
   0x03,
@@ -369,6 +458,9 @@ int upv_s::process_data(const uint8_t* data, int len)
                 pkt_status&=0xffffff0f;
                 data_state = 2;
             }else{
+#ifdef UPV_PKT_DEBUG
+                dbg_pkt_count++;
+#endif
                 if(packet_handler){
                     packet_handler(capture_context, pkt_tick, data, 0, pkt_status);
                 }
@@ -383,6 +475,12 @@ int upv_s::process_data(const uint8_t* data, int len)
             }
             data_buf[data_buf_idx++] = header;
             if(pkt_len <= 2){
+#ifdef UPV_PKT_DEBUG
+                if(pkt_len&1){
+                    dbg_last_remain = ((uint8_t*)data_buf)[pkt_len+2];
+                }
+                dbg_pkt_count++;
+#endif
                 if(packet_handler){
                     packet_handler(capture_context, pkt_tick, ((char*)data_buf)+2, pkt_len, pkt_status);
                 }
@@ -394,6 +492,12 @@ int upv_s::process_data(const uint8_t* data, int len)
         case 3:
             data_buf[data_buf_idx++] = header;
             if(data_buf_idx * 4 - 2 >= pkt_len){
+#ifdef UPV_PKT_DEBUG
+                if(pkt_len&1){
+                    dbg_last_remain = ((uint8_t*)data_buf)[pkt_len+2];
+                }
+                dbg_pkt_count++;
+#endif
                 if(packet_handler){
                     packet_handler(capture_context, pkt_tick, ((char*)data_buf)+2, pkt_len, pkt_status);
                 }
@@ -410,7 +514,16 @@ int upv_s::process_data(const uint8_t* data, int len)
              pkt_len = header & 0xffff;
              if((last_header & 0xf0) == 0x60 && pkt_len<=(1024+3)){
                  data_buf[data_buf_idx++] = header;
-                 if(pkt_len <= 2){
+#ifdef UPV_PKT_DEBUG
+                 dbg_recover_count++;
+#endif
+                if(pkt_len <= 2){
+#ifdef UPV_PKT_DEBUG
+                    if(pkt_len&1){
+                        dbg_last_remain = ((uint8_t*)data_buf)[pkt_len+2];
+                    }
+                    dbg_pkt_count++;
+#endif
                      if(packet_handler){
                          packet_handler(capture_context, pkt_tick, ((char*)data_buf)+2, pkt_len, pkt_status);
                      }
@@ -469,7 +582,10 @@ upv_s::upv_result upv_s::stop_capture(int timeout)
         DBG_PRINTF("parser thread will terminate\n");
         pthread_kill(parser_thread, 0);
     }
-
+#ifdef UPV_PKT_DEBUG
+    dbg_finish = 1;
+    pthread_join(dbg_thread, &thread_res);
+#endif
     return upv_s::R_Success;
 }
 

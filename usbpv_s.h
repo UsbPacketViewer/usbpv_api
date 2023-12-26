@@ -6,6 +6,7 @@
 #include <list>
 #include <string>
 #include "string.h"
+#include <pthread.h>
 
 #ifdef _WIN32
 #define UPV_CALL __cdecl
@@ -23,6 +24,9 @@
 
 #define UPV_API  __attribute__((visibility("default")))
 #endif
+
+#define UPV_PKT_DEBUG
+#define UPV_LOG  printf
 
 
 #define UPV_OUT_REQ  (LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE | LIBUSB_ENDPOINT_OUT)
@@ -243,6 +247,19 @@ public:
     int32_t pkt_status;
     int32_t pkt_tick;
     uint16_t bcdUSB;
+
+#ifdef UPV_PKT_DEBUG
+    pthread_t dbg_thread;
+    volatile int    dbg_finish;
+    struct timeval dbg_start_time;
+    uint64_t  dbg_recv_len;
+    uint64_t  dbg_process_len;
+    uint64_t  dbg_pkt_count;
+    uint64_t  dbg_recover_count;
+    uint32_t  dbg_last_remain;
+    uint32_t  dbg_last_rx_len;
+    void* dbg_thread_func();
+#endif
 };
 
 #endif
